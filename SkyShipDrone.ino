@@ -4,6 +4,11 @@
 #include "esp_gap_bt_api.h"
 #include "esp_bt_defs.h"
 #include "esp_spp_api.h"
+#include <TinyGPS++.h>
+
+#define GPS_BAUDRATE 9600  // The default baudrate of NEO-6M is 9600
+
+TinyGPSPlus gps;  // the TinyGPS++ object
 
 #if !defined(CONFIG_BT_ENABLED) || !defined(CONFIG_BLUEDROID_ENABLED)
 #error Bluetooth está deshabilitado. Para habilitarlo, ve a `Tools` > `Core Debug Level` > `Bluetooth` y selecciona `Classic Bluetooth` o `Dual Mode`.
@@ -51,8 +56,9 @@ void btGapCallback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param) {
 
 void setup() {
   Serial.begin(115200);
+  Serial2.begin(GPS_BAUDRATE);
   
-  // Inicializar Bluetooth con el nombre "ESP32test"
+  // Inicializar Bluetooth 
   if (!SerialBT.begin("SkyShip Drone")) {
     Serial.println("¡Fallo en el inicio del Bluetooth!");
     while (1);
@@ -64,16 +70,33 @@ void setup() {
   SerialBT.register_callback(btCallback);
 
   Serial.println("El dispositivo Bluetooth está listo para emparejarse.");
+  Serial.println(F("ESP32 - GPS module"));
 }
 
 void loop() {
-  // Enviar datos al dispositivo Bluetooth conectado si no se está esperando una respuesta
-  if (SerialBT.connected() && !esperandoRespuesta) {
-    SerialBT.println("Hola desde SkyShip Drone!");
-    delay(2000);  // Envía el mensaje "Hola desde SkyShip Drone!"
-    esperandoRespuesta = true;  // Marcar que se está esperando una respuesta
+  // Leer datos del GPS
+  while (Serial2.available() > 0) {
+    gps.encode(Serial2.read());
   }
   
-  // Manejar otros eventos o tareas si es necesario
-  delay(2000); // Añadir un pequeño retardo para evitar envíos continuos muy rápidos
+  // Enviar datos al dispositivo Bluetooth conectado si no se está esperando una respuesta
+  if (gps.location.isUpdated() && SerialBT.connected() && !esperandoRespuesta) {
+    if (gps.location.isValid()) {
+      Serial.print(F("Latitud: "));
+      Serial.println(gps.location.lat());
+      Serial.print(F("Longitud: "));
+      Serial.println(gps.location.lng());
+      
+      SerialBT.print("Latitud: ");
+      SerialBT.println(gps.location.lat());
+      SerialBT.print("Longitud: ");
+      SerialBT.println(gps.location.lng());
+      
+      esperandoRespuesta = true;  // Marcar que se está esperando una respuesta
+    } else {
+      Serial.println(F("Localización GPS no válida"));
+    }
+  }
+  
+  delay(2000);  // Añadir un pequeño retardo para evitar envíos continuos muy rápidos
 }
