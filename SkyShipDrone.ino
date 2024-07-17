@@ -1,21 +1,20 @@
 #include "BluetoothSerial.h"
-#include "esp_bt_main.h"
-#include "esp_bt_device.h"
-#include "esp_gap_bt_api.h"
-#include "esp_bt_defs.h"
-#include "esp_spp_api.h"
 #include <TinyGPS++.h>
 
-#define GPS_BAUDRATE 9600  // The default baudrate of NEO-6M is 9600
+#define RXD2 16
+#define TXD2 17
+#define NMEA 0 // The default baudrate of NEO-6M is 9600
 
+HardwareSerial neogps(1);
 TinyGPSPlus gps;  // the TinyGPS++ object
+BluetoothSerial SerialBT;
+
+char datoCmd = 0;
+bool esperandoRespuesta = false;
 
 #if !defined(CONFIG_BT_ENABLED) || !defined(CONFIG_BLUEDROID_ENABLED)
-#error Bluetooth está deshabilitado. Para habilitarlo, ve a `Tools` > `Core Debug Level` > `Bluetooth` y selecciona `Classic Bluetooth` o `Dual Mode`.
+#error Bluetooth is disabled. To enable it, go to `Tools` > `Core Debug Level` > `Bluetooth` and select `Classic Bluetooth` or `Dual Mode`.
 #endif
-
-BluetoothSerial SerialBT;
-bool esperandoRespuesta = false;
 
 void btCallback(esp_spp_cb_event_t event, esp_spp_cb_param_t *param) {
   if (event == ESP_SPP_SRV_OPEN_EVT) {
@@ -23,80 +22,109 @@ void btCallback(esp_spp_cb_event_t event, esp_spp_cb_param_t *param) {
   } else if (event == ESP_SPP_DATA_IND_EVT) {
     Serial.print("Recibido: ");
     Serial.println((char *)param->data_ind.data);
-    
-    // Marcar que se ha recibido una respuesta
-    esperandoRespuesta = false;
-  }
-}
-
-void btGapCallback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param) {
-  switch (event) {
-    case ESP_BT_GAP_PIN_REQ_EVT: {
-      Serial.println("PIN requerido.");
-      esp_bt_pin_code_t pin_code;
-      strcpy((char *)pin_code, "1234");
-      esp_bt_gap_pin_reply(param->pin_req.bda, true, 4, pin_code);
-      break;
-    }
-    case ESP_BT_GAP_AUTH_CMPL_EVT: {
-      if (param->auth_cmpl.stat == ESP_BT_STATUS_SUCCESS) {
-        Serial.println("Autenticación exitosa.");
-        Serial.print("Emparejado con: ");
-        Serial.println((char *)param->auth_cmpl.device_name);
-      } else {
-        Serial.println("Autenticación fallida.");
-      }
-      break;
-    }
-    default: {
-      break;
-    }
+    esperandoRespuesta = false; // Mark that a response has been received
   }
 }
 
 void setup() {
   Serial.begin(115200);
-  Serial2.begin(GPS_BAUDRATE);
+  neogps.begin(9600, SERIAL_8N1, RXD2, TXD2);
   
-  // Inicializar Bluetooth 
+  // Initialize Bluetooth
   if (!SerialBT.begin("SkyShip Drone")) {
     Serial.println("¡Fallo en el inicio del Bluetooth!");
     while (1);
   }
-  
-  // Configurar el PIN y registrar los callbacks
-  esp_bt_gap_register_callback(btGapCallback);
-  esp_bt_gap_set_pin(ESP_BT_PIN_TYPE_FIXED, 4, (uint8_t *)"1234");
+
   SerialBT.register_callback(btCallback);
 
   Serial.println("El dispositivo Bluetooth está listo para emparejarse.");
   Serial.println(F("ESP32 - GPS module"));
+  delay(3000);
 }
 
 void loop() {
-  // Leer datos del GPS
-  while (Serial2.available() > 0) {
-    gps.encode(Serial2.read());
+  if(SerialBT.connected() && !esperandoRespuesta){
+    GPS();
+  }else{ 
+    if (SerialBT.connected()){
+      Serial.println("Esperando respuesta del dispositivo");
+      delay(1000);
+    }else{
+      Serial.println("Esperando a que se concete un dispositivo");
+      delay(2000);
+    }
+    
   }
   
-  // Enviar datos al dispositivo Bluetooth conectado si no se está esperando una respuesta
-  if (gps.location.isUpdated() && SerialBT.connected() && !esperandoRespuesta) {
-    if (gps.location.isValid()) {
-      Serial.print(F("Latitud: "));
-      Serial.println(gps.location.lat());
-      Serial.print(F("Longitud: "));
-      Serial.println(gps.location.lng());
-      
-      SerialBT.print("Latitud: ");
-      SerialBT.println(gps.location.lat());
-      SerialBT.print("Longitud: ");
-      SerialBT.println(gps.location.lng());
-      
-      esperandoRespuesta = true;  // Marcar que se está esperando una respuesta
-    } else {
-      Serial.println(F("Localización GPS no válida"));
+}
+
+void GPS(){
+  if (NMEA) {
+    while (neogps.available()) {
+      datoCmd = (char)neogps.read();
+      Serial.print(datoCmd);
+    }
+  } else {
+    boolean newData = false;
+    for (unsigned long start = millis(); millis() - start < 1000;) {
+      while (neogps.available()) {
+        if (gps.encode(neogps.read())) {
+          newData = true;
+        }
+      }
+    }
+
+    if (newData) {
+      newData = false;
+      //Serial.println(gps.satellites.value());
+      visualizacionSerial();
+      enviarDatosBT();
     }
   }
-  
-  delay(2000);  // Añadir un pequeño retardo para evitar envíos continuos muy rápidos
+}
+void visualizacionSerial() {
+  if (gps.location.isValid()) {
+    Serial.println("---------------------------");
+    Serial.print("SAT:");
+    Serial.println(gps.satellites.value());
+    Serial.print("Lat: ");
+    Serial.println(gps.location.lat(), 6);
+    Serial.print("Lng: ");
+    Serial.println(gps.location.lng(), 6);
+    //Serial.print("ALT:");
+    //Serial.println(gps.altitude.meters(), 0);
+    Serial.print("Datetime: ");
+    Serial.print(gps.date.day()); Serial.print("/");
+    Serial.print(gps.date.month()); Serial.print("/");
+    Serial.print(gps.date.year());Serial.print(" - ");
+    Serial.print(gps.time.hour()); Serial.print(":");
+    Serial.print(gps.time.minute()); Serial.print(":");
+    Serial.println(gps.time.second());
+    Serial.println("---------------------------");
+  } else {
+    Serial.println("Sin señal GPS");
+  }
+}
+
+void enviarDatosBT() {
+  // Send data to the connected Bluetooth device if not waiting for a response
+  if (gps.location.isValid() && SerialBT.connected() && !esperandoRespuesta) {
+    SerialBT.print("Latitud: ");
+    SerialBT.println(gps.location.lat(), 6);
+    SerialBT.print("Longitud: ");
+    SerialBT.println(gps.location.lng(), 6);
+    SerialBT.print("Datetime: ");
+    SerialBT.print(gps.date.day()); SerialBT.print("/");
+    SerialBT.print(gps.date.month()); SerialBT.print("/");
+    SerialBT.print(gps.date.year());SerialBT.print(" - ");
+    SerialBT.print(gps.time.hour()); SerialBT.print(":");
+    SerialBT.print(gps.time.minute()); SerialBT.print(":");
+    SerialBT.println(gps.time.second());
+    
+    Serial.println("Datos enviados a través de Bluetooth.");
+    Serial.println("---------------------------");
+    esperandoRespuesta = true;  // Mark that waiting for a response
+  }
+  delay(2000);  // Add a small delay to avoid very rapid continuous sending
 }
